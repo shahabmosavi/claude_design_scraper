@@ -127,7 +127,7 @@ async function createJiraTask(sourceIssueKey: string | null, prompt: string, scr
   const body = JSON.stringify({
     fields: {
       project: { key: project },
-      summary: `Frontend implementation — ${sourceIssueKey ?? prompt.slice(0, 60)}`,
+      summary: `Frontend implementation — ${(sourceIssueKey ?? prompt.replace(/\s+/g, " ").slice(0, 60)).trim()}`,
       issuetype: { name: "Task" },
       description: { type: "doc", version: 1, content: descContent },
     },
