@@ -12,6 +12,7 @@ import { findPromptInput, submitPrompt, isLoginPage } from "./selectors.js";
 export interface GenerateOptions {
   prompt: string;
   mode: "screenshot" | "text";
+  onInterrupted?: (attempt: number) => void;
 }
 
 export interface GenerateResult {
@@ -507,7 +508,7 @@ async function selectModel(page: Page, prefer: "sonnet" | "opus" | "haiku"): Pro
 }
 
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
-  const { prompt, mode } = options;
+  const { prompt, mode, onInterrupted } = options;
   const claudeUrl = getEnv(
     "CLAUDE_DESIGN_URL",
     "https://claude.ai/design/p/db3a0556-5631-4f14-aae6-9cc01e035db2"
@@ -643,6 +644,7 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     if (!interrupted) break;
 
     console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}), clicking retry...`);
+    onInterrupted?.(attempt);
     const retryBtn = page.locator("button").filter({ hasText: /try again|retry/i }).first();
     const retryVisible = await retryBtn.isVisible().catch(() => false);
     if (retryVisible) {

@@ -172,7 +172,13 @@ async function runWorker() {
     console.log(`[queue] Starting job ${jobId} — prompt: "${job.prompt.slice(0, 60)}"`);
 
     try {
-      let result = await generate({ prompt: job.prompt, mode: job.mode });
+      let result = await generate({
+        prompt: job.prompt,
+        mode: job.mode,
+        onInterrupted: (attempt) => {
+          sendTelegram(`⚠️ Claude Design interrupted (attempt ${attempt}/3)\nPrompt: "${job.prompt.slice(0, 100)}"\nRetrying...`).catch(() => {});
+        },
+      });
 
       // If Claude Design asked questions, wait for user's Telegram reply
       if (result.questions) {
