@@ -164,6 +164,11 @@ async function runWorker() {
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.post("/generate", (req: Request, res: Response) => {
+  if (workerRunning) {
+    res.status(409).json({ success: false, message: "A job is already running. Try again when it finishes." });
+    return;
+  }
+
   const prompt = ((req.body as { prompt?: string }).prompt ?? "").trim();
   const rawMode = ((req.body as { mode?: string }).mode ?? "screenshot").toLowerCase();
   const mode: "screenshot" | "text" = rawMode === "text" ? "text" : "screenshot";
