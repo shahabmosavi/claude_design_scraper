@@ -41,15 +41,19 @@ function getEnv(key: string, fallback: string): string {
 }
 
 async function tryConnectExisting(): Promise<BrowserContext | null> {
-  try {
-    const browser = await chromiumExtra.connectOverCDP(`http://localhost:${CDP_PORT}`, { timeout: 2000 });
-    const contexts = browser.contexts();
-    const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
-    console.log(`[browser] Reconnected to existing Chrome on port ${CDP_PORT}`);
-    return context;
-  } catch {
-    return null;
+  // Retry a few times — Chrome may be starting up or briefly unresponsive
+  for (let i = 0; i < 3; i++) {
+    try {
+      const browser = await chromiumExtra.connectOverCDP(`http://localhost:${CDP_PORT}`, { timeout: 3000 });
+      const contexts = browser.contexts();
+      const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
+      console.log(`[browser] Reconnected to existing Chrome on port ${CDP_PORT}`);
+      return context;
+    } catch {
+      if (i < 2) await new Promise((r) => setTimeout(r, 1500));
+    }
   }
+  return null;
 }
 
 async function getOrCreateContext(): Promise<BrowserContext> {
@@ -474,19 +478,15 @@ async function recoverCrashedPage(page: Page, context: BrowserContext, targetUrl
 
   if (!isCrashed) return page;
 
-  console.log("[browser] Crash page detected (Aw, Snap!) — opening fresh tab...");
-  // Notify via the module-level crash handler if set
+  console.log("[browser] Crash page detected (Aw, Snap!) — refreshing...");
   crashHandler?.();
   try {
-    const newPage = await context.newPage();
-    await newPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.close().catch(() => {});
-    console.log("[browser] Recovered from crash, new tab ready");
-    return newPage;
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    console.log("[browser] Page recovered via reload");
   } catch (err) {
-    console.log("[browser] Recovery failed:", err instanceof Error ? err.message : String(err));
-    return page;
+    console.log("[browser] Reload failed:", err instanceof Error ? err.message : String(err));
   }
+  return page;
 }
 
 async function selectModel(page: Page, prefer: "sonnet" | "opus" | "haiku"): Promise<void> {
