@@ -161,6 +161,18 @@ async function runWorker() {
   workerRunning = false;
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function enqueueJob(prompt: string, mode: "screenshot" | "text"): Job {
+  const job: Job = { id: randomUUID(), prompt, mode, status: "queued", createdAt: Date.now() };
+  jobs.set(job.id, job);
+  queue.push(job.id);
+  console.log(`[queue] Enqueued job ${job.id} (queue length: ${queue.length})`);
+  sendTelegram(`📥 Job queued\nPrompt: "${prompt.slice(0, 100)}"\nQueue position: ${queue.length}`).catch(() => {});
+  runWorker();
+  return job;
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.post("/generate", (req: Request, res: Response) => {
@@ -177,22 +189,29 @@ app.post("/generate", (req: Request, res: Response) => {
     return;
   }
 
-  const job: Job = {
-    id: randomUUID(),
-    prompt,
-    mode,
-    status: "queued",
-    createdAt: Date.now(),
+  const job = enqueueJob(prompt, mode);
+  res.status(202).json({ jobId: job.id, status: "queued" });
+});
+
+app.post("/jira", (req: Request, res: Response) => {
+  const body = req.body as {
+    issue?: { key?: string; summary?: string; description?: string };
+    webhookEvent?: string;
   };
 
-  jobs.set(job.id, job);
-  queue.push(job.id);
-  console.log(`[queue] Enqueued job ${job.id} (queue length: ${queue.length})`);
-  sendTelegram(`📥 Job queued\nPrompt: "${job.prompt.slice(0, 100)}"\nQueue position: ${queue.length}`).catch(() => {});
+  const description = body.issue?.description?.trim();
+  const summary = body.issue?.summary?.trim();
+  const key = body.issue?.key ?? "?";
 
-  runWorker();
+  if (!description && !summary) {
+    res.status(400).json({ success: false, message: "No description or summary in Jira payload." });
+    return;
+  }
 
-  res.status(202).json({ jobId: job.id, status: "queued" });
+  const prompt = description ?? summary!;
+  const job = enqueueJob(prompt.slice(0, 4000), "screenshot");
+  console.log(`[jira] Webhook received — issue ${key}, job ${job.id}`);
+  res.status(202).json({ jobId: job.id, status: "queued", issueKey: key });
 });
 
 app.get("/jobs/:id", (req: Request, res: Response) => {
