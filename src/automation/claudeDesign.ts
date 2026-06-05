@@ -1,8 +1,12 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
-import { chromium, BrowserContext, Page } from "playwright";
+import { BrowserContext, Page } from "playwright";
+import { chromium as chromiumExtra } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { cookieFileExists, loadCookies, injectCookies } from "./cookies.js";
+
+chromiumExtra.use(StealthPlugin());
 import { findPromptInput, submitPrompt, isLoginPage } from "./selectors.js";
 
 export interface GenerateOptions {
@@ -15,6 +19,7 @@ export interface GenerateResult {
   message: string;
   screenshotPath: string;
   text: string | null;
+  questions: string | null;
 }
 
 // Module-level context so we reuse the browser across requests
@@ -28,7 +33,7 @@ function getEnv(key: string, fallback: string): string {
 
 async function tryConnectExisting(): Promise<BrowserContext | null> {
   try {
-    const browser = await chromium.connectOverCDP(`http://localhost:${CDP_PORT}`, { timeout: 2000 });
+    const browser = await chromiumExtra.connectOverCDP(`http://localhost:${CDP_PORT}`, { timeout: 2000 });
     const contexts = browser.contexts();
     const context = contexts.length > 0 ? contexts[0] : await browser.newContext();
     console.log(`[browser] Reconnected to existing Chrome on port ${CDP_PORT}`);
@@ -58,7 +63,7 @@ async function getOrCreateContext(): Promise<BrowserContext> {
 
   console.log(`[browser] Launching Chromium (headless=${headless})`);
 
-  const context = await chromium.launchPersistentContext(profileDir, {
+  const context = await chromiumExtra.launchPersistentContext(profileDir, {
     headless,
     viewport: { width: 1440, height: 900 },
     userAgent:
@@ -465,11 +470,78 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   await page.screenshot({ path: screenshotPath, fullPage: true });
   console.log(`[automation] Screenshot saved: ${screenshotPath}`);
 
+  // Detect if Claude Design asked clarifying questions instead of generating
+  const pageText = await page.evaluate(() => document.body.innerText ?? "");
+  const hasGenerated = pageText.includes("View code") || pageText.includes("Open in") || pageText.includes("Preview");
+  const hasQuestions =
+    !hasGenerated &&
+    (pageText.includes("Quick questions") ||
+      pageText.includes("question") ||
+      pageText.includes("?"));
+
+  let questions: string | null = null;
+  if (hasQuestions) {
+    // Extract the assistant's response text as the questions
+    try {
+      const msgEl = page.locator('[data-testid*="assistant"], .assistant-message, [role="article"]').last();
+      const raw = await msgEl.innerText({ timeout: 3000 }).catch(() => pageText.slice(0, 800));
+      questions = raw.trim();
+    } catch {
+      questions = pageText.slice(0, 800);
+    }
+    console.log("[automation] Claude Design asked questions — waiting for user answer");
+  }
+
   return {
     success: true,
-    message: "Generation complete. Screenshot saved.",
+    message: hasQuestions ? "Claude Design asked questions." : "Generation complete. Screenshot saved.",
     screenshotPath,
     text: mode === "text" ? (extractedText ?? null) : null,
+    questions,
+  };
+}
+
+/**
+ * Type an answer into the already-open Claude Design page and wait for generation.
+ */
+export async function submitAnswer(answer: string, mode: "screenshot" | "text"): Promise<GenerateResult> {
+  const outputDir = path.resolve(getEnv("OUTPUT_DIR", "./outputs"));
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+  const context = await getOrCreateContext();
+  const pages = context.pages();
+  const page: Page = pages.length > 0 ? pages[0] : await context.newPage();
+
+  const previousText = await page.evaluate(() => document.body.innerText ?? "");
+
+  console.log("[automation] Submitting answer to Claude Design questions...");
+  const input = await findPromptInput(page);
+  await input.click();
+  await page.waitForTimeout(300);
+  const tagName = await input.evaluate((el) => el.tagName.toLowerCase());
+  if (tagName === "textarea") {
+    await input.fill(answer);
+  } else {
+    await input.selectText().catch(() => {});
+    await page.keyboard.press("Control+A");
+    await input.type(answer, { delay: 15 });
+  }
+  await submitPrompt(page);
+
+  const extractedText = await waitForResult(page, previousText);
+
+  const timestamp = Date.now();
+  const screenshotFilename = `design-${timestamp}.png`;
+  const screenshotPath = path.join(outputDir, screenshotFilename);
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  console.log(`[automation] Screenshot saved: ${screenshotPath}`);
+
+  return {
+    success: true,
+    message: "Generation complete after answer. Screenshot saved.",
+    screenshotPath,
+    text: mode === "text" ? (extractedText ?? null) : null,
+    questions: null,
   };
 }
 

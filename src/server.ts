@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
 import https from "https";
-import { generate, closeBrowser } from "./automation/claudeDesign.js";
+import { generate, submitAnswer, closeBrowser } from "./automation/claudeDesign.js";
 
 // ── File logging ─────────────────────────────────────────────────────────────
 const LOG_DIR = path.resolve("logs");
@@ -22,21 +22,52 @@ const _err = console.error.bind(console);
 console.log = (...a) => writeLog("INFO", ...a);
 console.error = (...a) => writeLog("ERROR", ...a);
 
-async function sendTelegram(message: string): Promise<void> {
+async function telegramRequest(method: string, body: object): Promise<unknown> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
-
-  const body = JSON.stringify({ chat_id: chatId, text: message });
-  await new Promise<void>((resolve) => {
+  if (!token) return null;
+  const payload = JSON.stringify(body);
+  return new Promise((resolve) => {
     const req = https.request(
-      { hostname: "api.telegram.org", path: `/bot${token}/sendMessage`, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
-      (res) => { res.resume(); res.on("end", resolve); }
+      { hostname: "api.telegram.org", path: `/bot${token}/${method}`, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      }
     );
-    req.on("error", () => resolve());
-    req.write(body);
+    req.on("error", () => resolve(null));
+    req.write(payload);
     req.end();
   });
+}
+
+async function sendTelegram(message: string): Promise<void> {
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!chatId) return;
+  await telegramRequest("sendMessage", { chat_id: chatId, text: message });
+}
+
+// Poll Telegram for a reply from the user, waiting up to timeoutMs
+async function waitForTelegramReply(afterMs: number, timeoutMs: number): Promise<string | null> {
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!chatId) return null;
+  const deadline = Date.now() + timeoutMs;
+  let offset = 0;
+
+  while (Date.now() < deadline) {
+    const res = await telegramRequest("getUpdates", { offset, timeout: 20, allowed_updates: ["message"] }) as { ok: boolean; result: Array<{ update_id: number; message?: { chat: { id: number }; text?: string; date: number } }> } | null;
+    if (res?.ok && res.result.length > 0) {
+      for (const update of res.result) {
+        offset = update.update_id + 1;
+        const msg = update.message;
+        if (msg && String(msg.chat.id) === chatId && msg.text && msg.date * 1000 > afterMs) {
+          return msg.text;
+        }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
 }
 
 const app = express();
@@ -49,7 +80,7 @@ app.use("/outputs", express.static(OUTPUT_DIR));
 
 // ── Job queue ────────────────────────────────────────────────────────────────
 
-type JobStatus = "queued" | "running" | "done" | "failed";
+type JobStatus = "queued" | "running" | "awaiting_answer" | "done" | "failed";
 
 interface Job {
   id: string;
@@ -86,7 +117,27 @@ async function runWorker() {
     console.log(`[queue] Starting job ${jobId} — prompt: "${job.prompt.slice(0, 60)}"`);
 
     try {
-      const result = await generate({ prompt: job.prompt, mode: job.mode });
+      let result = await generate({ prompt: job.prompt, mode: job.mode });
+
+      // If Claude Design asked questions, wait for user's Telegram reply
+      if (result.questions) {
+        job.status = "awaiting_answer";
+        const askedAt = Date.now();
+        await sendTelegram(
+          `❓ Claude Design has questions about your prompt:\n\n${result.questions}\n\nReply here with your answer to continue.`
+        );
+        console.log(`[queue] Job ${jobId} awaiting answer via Telegram`);
+
+        const answer = await waitForTelegramReply(askedAt, 10 * 60 * 1000); // 10 min timeout
+        if (!answer) {
+          throw new Error("No answer received within 10 minutes.");
+        }
+
+        console.log(`[queue] Got answer for job ${jobId}: "${answer.slice(0, 80)}"`);
+        job.status = "running";
+        result = await submitAnswer(answer, job.mode);
+      }
+
       const filename = path.basename(result.screenshotPath);
       job.status = "done";
       job.result = {
