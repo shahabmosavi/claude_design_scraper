@@ -47,6 +47,53 @@ async function sendTelegram(message: string): Promise<void> {
   await telegramRequest("sendMessage", { chat_id: chatId, text: message });
 }
 
+async function createJiraTask(sourceIssueKey: string, prompt: string, screenshotPath: string): Promise<string | null> {
+  const base = process.env.JIRA_BASE_URL;
+  const email = process.env.JIRA_EMAIL;
+  const token = process.env.JIRA_API_TOKEN;
+  const project = process.env.JIRA_PROJECT_KEY;
+  if (!base || !email || !token || !project) return null;
+
+  const auth = Buffer.from(`${email}:${token}`).toString("base64");
+  const screenshotUrl = `${base.replace(/\/$/, "")}${screenshotPath}`;
+
+  const body = JSON.stringify({
+    fields: {
+      project: { key: project },
+      summary: `Frontend implementation — ${sourceIssueKey}`,
+      issuetype: { name: "Task" },
+      description: {
+        type: "doc", version: 1,
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: `Design completed for ${sourceIssueKey}.` }] },
+          { type: "paragraph", content: [{ type: "text", text: `Original prompt: ${prompt.slice(0, 300)}` }] },
+          { type: "paragraph", content: [{ type: "text", text: `Screenshot: ${screenshotUrl}` }] },
+        ],
+      },
+    },
+  });
+
+  const result = await new Promise<{ key?: string } | null>((resolve) => {
+    const url = new URL("/rest/api/3/issue", base);
+    const req = https.request(
+      { hostname: url.hostname, path: url.pathname, method: "POST", headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
+      (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+      }
+    );
+    req.on("error", () => resolve(null));
+    req.write(body);
+    req.end();
+  });
+
+  const key = result?.key ?? null;
+  if (key) console.log(`[jira] Created frontend task ${key} for ${sourceIssueKey}`);
+  else console.error("[jira] Failed to create task:", JSON.stringify(result));
+  return key;
+}
+
 // Poll Telegram for a reply from the user, waiting up to timeoutMs
 async function waitForTelegramReply(afterMs: number, timeoutMs: number): Promise<string | null> {
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -86,6 +133,7 @@ interface Job {
   id: string;
   prompt: string;
   mode: "screenshot" | "text";
+  sourceIssueKey?: string;
   status: JobStatus;
   createdAt: number;
   startedAt?: number;
@@ -148,6 +196,11 @@ async function runWorker() {
       };
       console.log(`[queue] Job ${jobId} done`);
       sendTelegram(`✅ Job done\nPrompt: "${job.prompt.slice(0, 100)}"\nScreenshot: ${job.result.screenshotPath}`).catch(() => {});
+
+      if (job.sourceIssueKey) {
+        const newKey = await createJiraTask(job.sourceIssueKey, job.prompt, job.result.screenshotPath ?? "");
+        if (newKey) sendTelegram(`🎫 Jira task created: ${newKey} (frontend dev for ${job.sourceIssueKey})`).catch(() => {});
+      }
     } catch (err) {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
@@ -163,8 +216,8 @@ async function runWorker() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function enqueueJob(prompt: string, mode: "screenshot" | "text"): Job {
-  const job: Job = { id: randomUUID(), prompt, mode, status: "queued", createdAt: Date.now() };
+function enqueueJob(prompt: string, mode: "screenshot" | "text", sourceIssueKey?: string): Job {
+  const job: Job = { id: randomUUID(), prompt, mode, status: "queued", createdAt: Date.now(), sourceIssueKey };
   jobs.set(job.id, job);
   queue.push(job.id);
   console.log(`[queue] Enqueued job ${job.id} (queue length: ${queue.length})`);
@@ -201,7 +254,7 @@ app.post("/jira", (req: Request, res: Response) => {
 
   const description = body.issue?.description?.trim();
   const summary = body.issue?.summary?.trim();
-  const key = body.issue?.key ?? "?";
+  const key = body.issue?.key ?? undefined;
 
   if (!description && !summary) {
     res.status(400).json({ success: false, message: "No description or summary in Jira payload." });
@@ -209,7 +262,7 @@ app.post("/jira", (req: Request, res: Response) => {
   }
 
   const prompt = description ?? summary!;
-  const job = enqueueJob(prompt.slice(0, 4000), "screenshot");
+  const job = enqueueJob(prompt.slice(0, 4000), "screenshot", key);
   console.log(`[jira] Webhook received — issue ${key}, job ${job.id}`);
   res.status(202).json({ jobId: job.id, status: "queued", issueKey: key });
 });
