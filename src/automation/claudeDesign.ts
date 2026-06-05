@@ -26,6 +26,8 @@ export interface GenerateResult {
 // Module-level context so we reuse the browser across requests
 let sharedContext: BrowserContext | null = null;
 
+const MAX_RETRIES = 3;
+
 const CDP_PORT = 9222;
 
 function getEnv(key: string, fallback: string): string {
@@ -624,8 +626,33 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   console.log("[automation] Prompt entered. Submitting...");
   await submitPrompt(page);
 
-  // Wait for the result
-  const extractedText = await waitForResult(page, previousText);
+  // Wait for the result, retrying up to 3 times if Claude Design gets interrupted
+  let extractedText: string | null = null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    extractedText = await waitForResult(page, attempt === 1 ? previousText : "");
+
+    const midText = await page.evaluate(() => document.body.innerText ?? "");
+    const interrupted =
+      !midText.includes("View code") &&
+      !midText.includes("Open in") &&
+      !midText.includes("Preview") &&
+      !midText.includes("Quick questions") &&
+      !midText.includes("?") &&
+      (midText.includes("Try again") || midText.includes("Retry") || midText.includes("Something went wrong") || midText.includes("interrupted") || midText.includes("stopped"));
+
+    if (!interrupted) break;
+
+    console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}), clicking retry...`);
+    const retryBtn = page.locator("button").filter({ hasText: /try again|retry/i }).first();
+    const retryVisible = await retryBtn.isVisible().catch(() => false);
+    if (retryVisible) {
+      await retryBtn.click();
+      await page.waitForTimeout(1500);
+    } else {
+      console.log("[automation] Retry button not found, stopping retries");
+      break;
+    }
+  }
 
   // Screenshot
   const timestamp = Date.now();
@@ -700,7 +727,21 @@ export async function submitAnswer(answer: string, mode: "screenshot" | "text"):
   }
   await submitPrompt(page);
 
-  const extractedText = await waitForResult(page, previousText);
+  let extractedText: string | null = null;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    extractedText = await waitForResult(page, attempt === 1 ? previousText : "");
+    const midText = await page.evaluate(() => document.body.innerText ?? "");
+    const interrupted =
+      !midText.includes("View code") && !midText.includes("Open in") && !midText.includes("Preview") &&
+      (midText.includes("Try again") || midText.includes("Retry") || midText.includes("Something went wrong") || midText.includes("interrupted") || midText.includes("stopped"));
+    if (!interrupted) break;
+    console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}), clicking retry...`);
+    const retryBtn = page.locator("button").filter({ hasText: /try again|retry/i }).first();
+    if (await retryBtn.isVisible().catch(() => false)) {
+      await retryBtn.click();
+      await page.waitForTimeout(1500);
+    } else break;
+  }
 
   const timestamp = Date.now();
   const screenshotFilename = `design-${timestamp}.png`;
