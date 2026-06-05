@@ -721,6 +721,23 @@ export async function submitAnswer(answer: string, mode: "screenshot" | "text"):
 }
 
 /**
+ * Reload the Claude Design page so the next job starts with a clean slate.
+ */
+export async function refreshPage(): Promise<void> {
+  if (!sharedContext) return;
+  const pages = sharedContext.pages();
+  const page = pages.length > 0 ? pages[0] : null;
+  if (!page) return;
+  const claudeUrl = getEnv("CLAUDE_DESIGN_URL", "https://claude.ai/design/p/db3a0556-5631-4f14-aae6-9cc01e035db2");
+  try {
+    await page.goto(claudeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    console.log("[browser] Page refreshed for next job");
+  } catch (err) {
+    console.log("[browser] Page refresh failed:", err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
  * Cleanly close the shared browser context (call on server shutdown).
  */
 export async function closeBrowser(): Promise<void> {

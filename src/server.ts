@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
 import https from "https";
-import { generate, submitAnswer, closeBrowser } from "./automation/claudeDesign.js";
+import { generate, submitAnswer, closeBrowser, refreshPage } from "./automation/claudeDesign.js";
 
 // ── File logging ─────────────────────────────────────────────────────────────
 const LOG_DIR = path.resolve("logs");
@@ -206,6 +206,7 @@ async function runWorker() {
 
       const newKey = await createJiraTask(job.sourceIssueKey ?? null, job.prompt, job.result.screenshotPath ?? "", result.shareCommand);
       if (newKey) sendTelegram(`🎫 Jira task created: ${newKey}${job.sourceIssueKey ? ` (frontend dev for ${job.sourceIssueKey})` : ""}`).catch(() => {});
+      await refreshPage();
     } catch (err) {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
