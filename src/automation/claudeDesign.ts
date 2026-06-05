@@ -20,6 +20,7 @@ export interface GenerateResult {
   screenshotPath: string;
   text: string | null;
   questions: string | null;
+  shareCommand: string | null;
 }
 
 // Module-level context so we reuse the browser across requests
@@ -344,6 +345,102 @@ async function waitForResult(page: Page, previousText: string): Promise<string |
   return extractedText;
 }
 
+async function getShareCommand(page: Page): Promise<string | null> {
+  try {
+    console.log("[share] Starting Share → Claude Code flow...");
+
+    // Intercept clipboard.writeText on current page
+    await page.evaluate(() => {
+      (window as unknown as Record<string, unknown>)["__clipboardCapture"] = null;
+      const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+      navigator.clipboard.writeText = async (text: string) => {
+        (window as unknown as Record<string, unknown>)["__clipboardCapture"] = text;
+        return orig(text).catch(() => {});
+      };
+    });
+
+    // 1. Click Share
+    const shareBtn = page.locator("button, [role='button']").filter({ hasText: /^Share$/i }).first();
+    await shareBtn.waitFor({ state: "visible", timeout: 10000 });
+    await shareBtn.click();
+    await page.waitForTimeout(800);
+    console.log("[share] Clicked Share button");
+
+    // 2. Click "Send to..."
+    const sendToBtn = page.locator("button, [role='button'], [role='menuitem'], li, a").filter({ hasText: /send to/i }).first();
+    await sendToBtn.waitFor({ state: "visible", timeout: 5000 });
+    await sendToBtn.click();
+    await page.waitForTimeout(800);
+    console.log("[share] Clicked Send to...");
+
+    // 3. Click "Claude Code" (first option)
+    const claudeCodeOpt = page.locator("[role='option'], [role='menuitem'], li, button, a").filter({ hasText: /claude code/i }).first();
+    await claudeCodeOpt.waitFor({ state: "visible", timeout: 5000 });
+    await claudeCodeOpt.click();
+    await page.waitForTimeout(500);
+    console.log("[share] Clicked Claude Code option");
+
+    // 4. Click "Send" — may open a new window
+    const sendBtn = page.locator("button").filter({ hasText: /^Send$/i }).first();
+    await sendBtn.waitFor({ state: "visible", timeout: 5000 });
+    const ctx = page.context();
+    const [newPage] = await Promise.all([
+      ctx.waitForEvent("page", { timeout: 8000 }).catch(() => null) as Promise<Page | null>,
+      sendBtn.click(),
+    ]);
+    await page.waitForTimeout(1200);
+    console.log("[share] Clicked Send, newPage=%s", newPage ? "yes" : "no");
+
+    const targetPage: Page = newPage ?? page;
+
+    if (newPage) {
+      await newPage.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+      // Intercept clipboard on the new page too
+      await newPage.evaluate(() => {
+        (window as unknown as Record<string, unknown>)["__clipboardCapture"] = null;
+        const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+        navigator.clipboard.writeText = async (text: string) => {
+          (window as unknown as Record<string, unknown>)["__clipboardCapture"] = text;
+          return orig(text).catch(() => {});
+        };
+      }).catch(() => {});
+    }
+
+    // 5. Try to read command text directly from a code/pre block before clicking copy
+    let command: string | null = null;
+    try {
+      command = await targetPage.evaluate(() => {
+        const el = document.querySelector("pre, code, [data-testid*='command'], .command, .claude-code-command");
+        return el ? el.textContent?.trim() ?? null : null;
+      });
+      if (command) console.log("[share] Found command text in DOM directly");
+    } catch { /* ignore */ }
+
+    // 6. Click "Copy command"
+    const copyBtn = targetPage.locator("button").filter({ hasText: /copy command/i }).first();
+    await copyBtn.waitFor({ state: "visible", timeout: 10000 });
+    await copyBtn.click();
+    await targetPage.waitForTimeout(600);
+    console.log("[share] Clicked Copy command");
+
+    // 7. Read intercepted clipboard value (overrides direct DOM read)
+    const captured = await targetPage.evaluate(
+      () => (window as unknown as Record<string, unknown>)["__clipboardCapture"] as string | null
+    ).catch(() => null);
+    if (captured) command = captured;
+
+    if (newPage && !newPage.isClosed()) await newPage.close().catch(() => {});
+
+    console.log("[share] Captured command:", command ? command.slice(0, 120) : "(none)");
+    return command;
+  } catch (err) {
+    console.log("[share] Share flow failed:", err instanceof Error ? err.message : String(err));
+    // Close any stray dialogs by pressing Escape
+    try { await page.keyboard.press("Escape"); } catch { /* ignore */ }
+    return null;
+  }
+}
+
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
   const { prompt, mode } = options;
   const claudeUrl = getEnv(
@@ -492,12 +589,19 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     console.log("[automation] Claude Design asked questions — waiting for user answer");
   }
 
+  // If generation is done, grab the Claude Code share command
+  let shareCommand: string | null = null;
+  if (hasGenerated) {
+    shareCommand = await getShareCommand(page);
+  }
+
   return {
     success: true,
     message: hasQuestions ? "Claude Design asked questions." : "Generation complete. Screenshot saved.",
     screenshotPath,
     text: mode === "text" ? (extractedText ?? null) : null,
     questions,
+    shareCommand,
   };
 }
 
@@ -536,12 +640,15 @@ export async function submitAnswer(answer: string, mode: "screenshot" | "text"):
   await page.screenshot({ path: screenshotPath, fullPage: true });
   console.log(`[automation] Screenshot saved: ${screenshotPath}`);
 
+  const shareCommand = await getShareCommand(page);
+
   return {
     success: true,
     message: "Generation complete after answer. Screenshot saved.",
     screenshotPath,
     text: mode === "text" ? (extractedText ?? null) : null,
     questions: null,
+    shareCommand,
   };
 }
 

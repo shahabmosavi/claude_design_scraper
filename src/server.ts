@@ -47,7 +47,7 @@ async function sendTelegram(message: string): Promise<void> {
   await telegramRequest("sendMessage", { chat_id: chatId, text: message });
 }
 
-async function createJiraTask(sourceIssueKey: string, prompt: string, screenshotPath: string): Promise<string | null> {
+async function createJiraTask(sourceIssueKey: string, prompt: string, screenshotPath: string, shareCommand?: string | null): Promise<string | null> {
   const base = process.env.JIRA_BASE_URL;
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
@@ -57,19 +57,25 @@ async function createJiraTask(sourceIssueKey: string, prompt: string, screenshot
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const screenshotUrl = `${base.replace(/\/$/, "")}${screenshotPath}`;
 
+  const descContent: object[] = [
+    { type: "paragraph", content: [{ type: "text", text: `Design completed for ${sourceIssueKey}.` }] },
+    { type: "paragraph", content: [{ type: "text", text: `Original prompt: ${prompt.slice(0, 300)}` }] },
+    { type: "paragraph", content: [{ type: "text", text: `Screenshot: ${screenshotUrl}` }] },
+  ];
+
+  if (shareCommand) {
+    descContent.push(
+      { type: "paragraph", content: [{ type: "text", text: "Claude Code command:", marks: [{ type: "strong" }] }] },
+      { type: "codeBlock", attrs: { language: "bash" }, content: [{ type: "text", text: shareCommand }] }
+    );
+  }
+
   const body = JSON.stringify({
     fields: {
       project: { key: project },
       summary: `Frontend implementation — ${sourceIssueKey}`,
       issuetype: { name: "Task" },
-      description: {
-        type: "doc", version: 1,
-        content: [
-          { type: "paragraph", content: [{ type: "text", text: `Design completed for ${sourceIssueKey}.` }] },
-          { type: "paragraph", content: [{ type: "text", text: `Original prompt: ${prompt.slice(0, 300)}` }] },
-          { type: "paragraph", content: [{ type: "text", text: `Screenshot: ${screenshotUrl}` }] },
-        ],
-      },
+      description: { type: "doc", version: 1, content: descContent },
     },
   });
 
@@ -198,7 +204,7 @@ async function runWorker() {
       sendTelegram(`✅ Job done\nPrompt: "${job.prompt.slice(0, 100)}"\nScreenshot: ${job.result.screenshotPath}`).catch(() => {});
 
       if (job.sourceIssueKey) {
-        const newKey = await createJiraTask(job.sourceIssueKey, job.prompt, job.result.screenshotPath ?? "");
+        const newKey = await createJiraTask(job.sourceIssueKey, job.prompt, job.result.screenshotPath ?? "", result.shareCommand);
         if (newKey) sendTelegram(`🎫 Jira task created: ${newKey} (frontend dev for ${job.sourceIssueKey})`).catch(() => {});
       }
     } catch (err) {
