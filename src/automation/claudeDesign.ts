@@ -698,32 +698,45 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
   console.log("[automation] Prompt entered. Submitting...");
   await submitPrompt(page);
 
-  // Wait for the result, retrying up to 3 times if Claude Design gets interrupted
+  // Wait for the result, retrying if Claude Design gets interrupted or crashes.
+  // "Interrupted" = no success indicators AND no question indicators.
   let extractedText: string | null = null;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    extractedText = await waitForResult(page, attempt === 1 ? previousText : "");
+    extractedText = await waitForResult(page, attempt === 1 ? previousText : "").catch(() => null);
 
-    const midText = await page.evaluate(() => document.body.innerText ?? "");
-    const interrupted =
-      !midText.includes("View code") &&
-      !midText.includes("Open in") &&
-      !midText.includes("Preview") &&
-      !midText.includes("Quick questions") &&
-      !midText.includes("?") &&
-      (midText.includes("Try again") || midText.includes("Retry") || midText.includes("Something went wrong") || midText.includes("interrupted") || midText.includes("stopped"));
+    // Recover from Aw Snap crash that may have happened during generation
+    page = await recoverCrashedPage(page, context, claudeUrl);
 
-    if (!interrupted) break;
+    const midText = await page.evaluate(() => document.body.innerText ?? "").catch(() => "");
+    const hasSuccess = midText.includes("View code") || midText.includes("Open in") || midText.includes("Preview");
+    const hasQuestionSignal = midText.includes("Quick questions") || midText.includes("?");
 
-    console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}), clicking retry...`);
+    if (hasSuccess || hasQuestionSignal) {
+      console.log(`[automation] Attempt ${attempt}: generation complete or has questions`);
+      break;
+    }
+
+    console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}): "${midText.slice(0, 120).replace(/\n/g, " ")}"`);
     onInterrupted?.(attempt);
+
+    if (attempt === MAX_RETRIES) break;
+
     const retryBtn = page.locator("button").filter({ hasText: /try again|retry/i }).first();
-    const retryVisible = await retryBtn.isVisible().catch(() => false);
-    if (retryVisible) {
+    if (await retryBtn.isVisible().catch(() => false)) {
       await retryBtn.click();
       await page.waitForTimeout(1500);
     } else {
-      console.log("[automation] Retry button not found, stopping retries");
-      break;
+      // No retry button — reload and re-submit the prompt
+      console.log("[automation] No retry button — reloading and re-submitting...");
+      await page.goto(claudeUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.waitForTimeout(2000);
+      const freshInput = await findPromptInput(page);
+      await freshInput.click();
+      await page.waitForTimeout(300);
+      const tagName = await freshInput.evaluate((el) => el.tagName.toLowerCase());
+      if (tagName === "textarea") { await freshInput.fill(prompt); }
+      else { await page.keyboard.press("Control+A"); await freshInput.type(prompt, { delay: 15 }); }
+      await submitPrompt(page);
     }
   }
 
@@ -804,11 +817,11 @@ export async function submitAnswer(answer: string, mode: "screenshot" | "text"):
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     extractedText = await waitForResult(page, attempt === 1 ? previousText : "");
     const midText = await page.evaluate(() => document.body.innerText ?? "");
-    const interrupted =
-      !midText.includes("View code") && !midText.includes("Open in") && !midText.includes("Preview") &&
-      (midText.includes("Try again") || midText.includes("Retry") || midText.includes("Something went wrong") || midText.includes("interrupted") || midText.includes("stopped"));
-    if (!interrupted) break;
-    console.log(`[automation] Generation interrupted (attempt ${attempt}/${MAX_RETRIES}), clicking retry...`);
+    const hasSuccess = midText.includes("View code") || midText.includes("Open in") || midText.includes("Preview");
+    const hasQuestionSignal = midText.includes("Quick questions") || midText.includes("?");
+    if (hasSuccess || hasQuestionSignal) break;
+    console.log(`[automation] Generation interrupted after answer (attempt ${attempt}/${MAX_RETRIES})`);
+    if (attempt === MAX_RETRIES) break;
     const retryBtn = page.locator("button").filter({ hasText: /try again|retry/i }).first();
     if (await retryBtn.isVisible().catch(() => false)) {
       await retryBtn.click();
