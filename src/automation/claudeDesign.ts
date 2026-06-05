@@ -26,6 +26,11 @@ export interface GenerateResult {
 
 // Module-level context so we reuse the browser across requests
 let sharedContext: BrowserContext | null = null;
+let crashHandler: (() => void) | null = null;
+
+export function onBrowserCrash(handler: () => void): void {
+  crashHandler = handler;
+}
 
 const MAX_RETRIES = 3;
 
@@ -450,6 +455,40 @@ async function getShareCommand(page: Page): Promise<string | null> {
   }
 }
 
+async function recoverCrashedPage(page: Page, context: BrowserContext, targetUrl: string): Promise<Page> {
+  let isCrashed = false;
+  try {
+    const url = page.url();
+    // Chrome crash page URL
+    if (url.startsWith("chrome-error://") || url === "about:blank") {
+      isCrashed = true;
+    } else {
+      const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "CRASHED");
+      if (bodyText.includes("Aw, Snap!") || bodyText.includes("Something went wrong while displaying this webpage") || bodyText === "CRASHED") {
+        isCrashed = true;
+      }
+    }
+  } catch {
+    isCrashed = true;
+  }
+
+  if (!isCrashed) return page;
+
+  console.log("[browser] Crash page detected (Aw, Snap!) — opening fresh tab...");
+  // Notify via the module-level crash handler if set
+  crashHandler?.();
+  try {
+    const newPage = await context.newPage();
+    await newPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.close().catch(() => {});
+    console.log("[browser] Recovered from crash, new tab ready");
+    return newPage;
+  } catch (err) {
+    console.log("[browser] Recovery failed:", err instanceof Error ? err.message : String(err));
+    return page;
+  }
+}
+
 async function selectModel(page: Page, prefer: "sonnet" | "opus" | "haiku"): Promise<void> {
   const modelBtn = page.locator("button[title='Change model']").first();
   await modelBtn.waitFor({ state: "visible", timeout: 5000 });
@@ -531,10 +570,16 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
 
   // Reuse an existing page or open a new one
   const pages = context.pages();
-  const page: Page = pages.length > 0 ? pages[0] : await context.newPage();
+  let page: Page = pages.length > 0 ? pages[0] : await context.newPage();
+
+  // Recover from "Aw, Snap!" renderer crash before navigating
+  page = await recoverCrashedPage(page, context, claudeUrl);
 
   console.log(`[automation] Navigating to ${claudeUrl}`);
   await page.goto(claudeUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+  // If navigation itself landed on a crash page, recover once more
+  page = await recoverCrashedPage(page, context, claudeUrl);
 
   // Wait for the SPA to hydrate before checking auth state
   try {
@@ -768,11 +813,11 @@ export async function submitAnswer(answer: string, mode: "screenshot" | "text"):
  */
 export async function refreshPage(): Promise<void> {
   if (!sharedContext) return;
-  const pages = sharedContext.pages();
-  const page = pages.length > 0 ? pages[0] : null;
-  if (!page) return;
   const claudeUrl = getEnv("CLAUDE_DESIGN_URL", "https://claude.ai/design/p/db3a0556-5631-4f14-aae6-9cc01e035db2");
   try {
+    const pages = sharedContext.pages();
+    let page = pages.length > 0 ? pages[0] : await sharedContext.newPage();
+    page = await recoverCrashedPage(page, sharedContext, claudeUrl);
     await page.goto(claudeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     console.log("[browser] Page refreshed for next job");
   } catch (err) {

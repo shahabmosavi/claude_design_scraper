@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
 import https from "https";
-import { generate, submitAnswer, closeBrowser, refreshPage } from "./automation/claudeDesign.js";
+import { generate, submitAnswer, closeBrowser, refreshPage, onBrowserCrash } from "./automation/claudeDesign.js";
 
 // ── File logging ─────────────────────────────────────────────────────────────
 const LOG_DIR = path.resolve("logs");
@@ -387,6 +387,10 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ── Start ────────────────────────────────────────────────────────────────────
+
+onBrowserCrash(() => {
+  sendTelegram("💥 Browser crashed (Aw, Snap!) — auto-recovering into a new tab.").catch(() => {});
+});
 
 const server = app.listen(PORT, () => {
   console.log(`\n[server] Claude Design Automation running at http://localhost:${PORT}`);
