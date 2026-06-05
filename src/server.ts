@@ -47,13 +47,13 @@ async function sendTelegram(message: string): Promise<void> {
   await telegramRequest("sendMessage", { chat_id: chatId, text: message });
 }
 
-async function sendTelegramWithRetryButton(message: string, jobId: string): Promise<void> {
+async function sendTelegramWithRetryButton(message: string, job: Job): Promise<void> {
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!chatId) return;
   await telegramRequest("sendMessage", {
     chat_id: chatId,
     text: message,
-    reply_markup: { inline_keyboard: [[{ text: "🔄 Retry", callback_data: `retry:${jobId}` }]] },
+    reply_markup: { inline_keyboard: [[{ text: "🔄 Retry", callback_data: `retry:${job.id}` }]] },
   });
 }
 
@@ -78,14 +78,19 @@ async function startCallbackPoller(): Promise<void> {
           await telegramRequest("answerCallbackQuery", { callback_query_id: cq.id });
 
           const jobId = cq.data.slice(6);
-          const original = jobs.get(jobId);
-          if (!original || original.status !== "failed") {
-            await sendTelegram(`⚠️ Job ${jobId} not found or not failed.`);
+          const inMemory = jobs.get(jobId);
+          const cached = inMemory ?? loadFailedJobsCache().get(jobId);
+          if (!cached) {
+            await sendTelegram(`⚠️ Could not find job ${jobId} — it may have been retried already.`);
             continue;
           }
+          const prompt = "prompt" in cached ? cached.prompt : (cached as Job).prompt;
+          const mode = "mode" in cached ? cached.mode : (cached as Job).mode;
+          const sourceIssueKey = "sourceIssueKey" in cached ? cached.sourceIssueKey : undefined;
 
-          const newJob = enqueueJob(original.prompt, original.mode, original.sourceIssueKey);
-          await sendTelegram(`🔄 Retrying job...\nPrompt: "${original.prompt.slice(0, 100)}"\nNew job: ${newJob.id}`);
+          removeFailedJob(jobId);
+          const newJob = enqueueJob(prompt, mode, sourceIssueKey);
+          await sendTelegram(`🔄 Retrying...\nPrompt: "${prompt.slice(0, 100)}"\nNew job: ${newJob.id}`);
           console.log(`[tg] Retry requested for ${jobId} → new job ${newJob.id}`);
         }
       }
@@ -147,6 +152,37 @@ async function createJiraTask(sourceIssueKey: string | null, prompt: string, scr
   if (key) console.log(`[jira] Created frontend task ${key} for ${sourceIssueKey ?? "manual"}}`);
   else console.error("[jira] Failed to create task:", JSON.stringify(result));
   return key;
+}
+
+// Persist failed jobs so retry works across restarts
+const FAILED_JOBS_FILE = path.join(LOG_DIR, "failed-jobs.json");
+
+function loadFailedJobsCache(): Map<string, { prompt: string; mode: "screenshot" | "text"; sourceIssueKey?: string }> {
+  try {
+    if (fs.existsSync(FAILED_JOBS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(FAILED_JOBS_FILE, "utf-8"));
+      return new Map(Object.entries(raw));
+    }
+  } catch { /* ignore */ }
+  return new Map();
+}
+
+function saveFailedJob(jobId: string, prompt: string, mode: "screenshot" | "text", sourceIssueKey?: string): void {
+  try {
+    const cache = loadFailedJobsCache();
+    cache.set(jobId, { prompt, mode, sourceIssueKey });
+    // Keep only last 100 failed jobs
+    const entries = Array.from(cache.entries()).slice(-100);
+    fs.writeFileSync(FAILED_JOBS_FILE, JSON.stringify(Object.fromEntries(entries)), "utf-8");
+  } catch { /* ignore */ }
+}
+
+function removeFailedJob(jobId: string): void {
+  try {
+    const cache = loadFailedJobsCache();
+    cache.delete(jobId);
+    fs.writeFileSync(FAILED_JOBS_FILE, JSON.stringify(Object.fromEntries(cache)), "utf-8");
+  } catch { /* ignore */ }
 }
 
 // Poll Telegram for a reply from the user, waiting up to timeoutMs
@@ -265,7 +301,8 @@ async function runWorker() {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
       console.error(`[queue] Job ${jobId} failed:`, job.error);
-      sendTelegramWithRetryButton(`❌ Job failed\nPrompt: "${job.prompt.slice(0, 100)}"\nReason: ${job.error}`, jobId).catch(() => {});
+      saveFailedJob(jobId, job.prompt, job.mode, job.sourceIssueKey);
+      sendTelegramWithRetryButton(`❌ Job failed\nPrompt: "${job.prompt.slice(0, 100)}"\nReason: ${job.error}`, job).catch(() => {});
     }
 
     job.finishedAt = Date.now();

@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import readline from "readline";
+import { execSync } from "child_process";
 import { BrowserContext, Page } from "playwright";
 import { chromium as chromiumExtra } from "playwright-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -41,8 +42,7 @@ function getEnv(key: string, fallback: string): string {
 }
 
 async function tryConnectExisting(): Promise<BrowserContext | null> {
-  // Retry a few times — Chrome may be starting up or briefly unresponsive
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 5; i++) {
     try {
       const browser = await chromiumExtra.connectOverCDP(`http://localhost:${CDP_PORT}`, { timeout: 3000 });
       const contexts = browser.contexts();
@@ -50,7 +50,10 @@ async function tryConnectExisting(): Promise<BrowserContext | null> {
       console.log(`[browser] Reconnected to existing Chrome on port ${CDP_PORT}`);
       return context;
     } catch {
-      if (i < 2) await new Promise((r) => setTimeout(r, 1500));
+      if (i < 4) {
+        console.log(`[browser] CDP connect attempt ${i + 1}/5 failed, retrying in 2s...`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     }
   }
   return null;
@@ -74,9 +77,7 @@ async function getOrCreateContext(): Promise<BrowserContext> {
     fs.mkdirSync(profileDir, { recursive: true });
   }
 
-  console.log(`[browser] Launching Chromium (headless=${headless})`);
-
-  const context = await chromiumExtra.launchPersistentContext(profileDir, {
+  const launchArgs = {
     headless,
     viewport: { width: 1440, height: 900 },
     userAgent:
@@ -89,7 +90,32 @@ async function getOrCreateContext(): Promise<BrowserContext> {
       "--no-sandbox",
       "--disable-setuid-sandbox",
     ],
-  });
+  };
+
+  console.log(`[browser] Launching Chromium (headless=${headless})`);
+
+  let context: BrowserContext;
+  try {
+    context = await chromiumExtra.launchPersistentContext(profileDir, launchArgs);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Opening in existing browser session") || msg.includes("profile is already in use")) {
+      // Stale Chrome is holding the profile but CDP isn't reachable — kill it and retry CDP
+      console.log("[browser] Profile locked by stale Chrome — killing and retrying CDP...");
+      try { execSync("pkill -f 'ms-playwright/chromium' || true", { stdio: "ignore" }); } catch { /* ignore */ }
+      await new Promise((r) => setTimeout(r, 2000));
+      const retried = await tryConnectExisting();
+      if (retried) {
+        sharedContext = retried;
+        return sharedContext;
+      }
+      // CDP still not up — launch fresh now that the lock is released
+      context = await chromiumExtra.launchPersistentContext(profileDir, launchArgs);
+    } else {
+      throw err;
+    }
+  }
+
 
   // Comprehensive stealth patches — run before every page load.
   // These mask the signals Cloudflare's Turnstile uses to fingerprint automation.
