@@ -47,7 +47,7 @@ async function sendTelegram(message: string): Promise<void> {
   await telegramRequest("sendMessage", { chat_id: chatId, text: message });
 }
 
-async function createJiraTask(sourceIssueKey: string, prompt: string, screenshotPath: string, shareCommand?: string | null): Promise<string | null> {
+async function createJiraTask(sourceIssueKey: string | null, prompt: string, screenshotPath: string, shareCommand?: string | null): Promise<string | null> {
   const base = process.env.JIRA_BASE_URL;
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
@@ -57,8 +57,9 @@ async function createJiraTask(sourceIssueKey: string, prompt: string, screenshot
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const screenshotUrl = `${base.replace(/\/$/, "")}${screenshotPath}`;
 
+  const label = sourceIssueKey ?? "manual request";
   const descContent: object[] = [
-    { type: "paragraph", content: [{ type: "text", text: `Design completed for ${sourceIssueKey}.` }] },
+    { type: "paragraph", content: [{ type: "text", text: `Design completed for ${label}.` }] },
     { type: "paragraph", content: [{ type: "text", text: `Original prompt: ${prompt.slice(0, 300)}` }] },
     { type: "paragraph", content: [{ type: "text", text: `Screenshot: ${screenshotUrl}` }] },
   ];
@@ -73,7 +74,7 @@ async function createJiraTask(sourceIssueKey: string, prompt: string, screenshot
   const body = JSON.stringify({
     fields: {
       project: { key: project },
-      summary: `Frontend implementation — ${sourceIssueKey}`,
+      summary: `Frontend implementation — ${sourceIssueKey ?? prompt.slice(0, 60)}`,
       issuetype: { name: "Task" },
       description: { type: "doc", version: 1, content: descContent },
     },
@@ -95,7 +96,7 @@ async function createJiraTask(sourceIssueKey: string, prompt: string, screenshot
   });
 
   const key = result?.key ?? null;
-  if (key) console.log(`[jira] Created frontend task ${key} for ${sourceIssueKey}`);
+  if (key) console.log(`[jira] Created frontend task ${key} for ${sourceIssueKey ?? "manual"}}`);
   else console.error("[jira] Failed to create task:", JSON.stringify(result));
   return key;
 }
@@ -203,10 +204,8 @@ async function runWorker() {
       console.log(`[queue] Job ${jobId} done`);
       sendTelegram(`✅ Job done\nPrompt: "${job.prompt.slice(0, 100)}"\nScreenshot: ${job.result.screenshotPath}`).catch(() => {});
 
-      if (job.sourceIssueKey) {
-        const newKey = await createJiraTask(job.sourceIssueKey, job.prompt, job.result.screenshotPath ?? "", result.shareCommand);
-        if (newKey) sendTelegram(`🎫 Jira task created: ${newKey} (frontend dev for ${job.sourceIssueKey})`).catch(() => {});
-      }
+      const newKey = await createJiraTask(job.sourceIssueKey ?? null, job.prompt, job.result.screenshotPath ?? "", result.shareCommand);
+      if (newKey) sendTelegram(`🎫 Jira task created: ${newKey}${job.sourceIssueKey ? ` (frontend dev for ${job.sourceIssueKey})` : ""}`).catch(() => {});
     } catch (err) {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
