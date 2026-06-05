@@ -1,0 +1,18 @@
+node_modules/
+dist/
+
+# Secrets — never commit these
+cookies.json
+.env
+
+# Browser session data
+browser-profile/
+auth/storageState.json
+
+# Generated outputs (keep the placeholder)
+outputs/*
+!outputs/.gitkeep
+
+# Auth directory contents (keep the placeholder)
+auth/*
+!auth/.gitkeep

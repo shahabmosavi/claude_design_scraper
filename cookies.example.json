@@ -1,0 +1,20 @@
+[
+  {
+    "name": "sessionKey",
+    "value": "YOUR_SESSION_COOKIE_VALUE_HERE",
+    "domain": ".claude.ai",
+    "path": "/",
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "anotherCookie",
+    "value": "ANOTHER_VALUE_HERE",
+    "domain": ".claude.ai",
+    "path": "/",
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  }
+]

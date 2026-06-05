@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Claude Design Automation</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Claude Design Automation</h1>
+      <p class="subtitle">Send a design prompt to Claude Design and capture the result.</p>
+    </header>
+
+    <main>
+      <section class="prompt-section">
+        <label for="prompt">Design Prompt</label>
+        <textarea
+          id="prompt"
+          rows="6"
+          placeholder="Describe the UI or design you want Claude to create…"
+          maxlength="4000"
+        ></textarea>
+        <div class="prompt-actions">
+          <button id="example-btn" class="btn btn-secondary">Load Example</button>
+          <span id="char-count" class="char-count">0 / 4000</span>
+        </div>
+
+        <div class="mode-row">
+          <label>
+            <input type="radio" name="mode" value="screenshot" checked />
+            Screenshot only
+          </label>
+          <label>
+            <input type="radio" name="mode" value="text" />
+            Screenshot + extract text
+          </label>
+        </div>
+
+        <button id="send-btn" class="btn btn-primary">Send to Claude Design</button>
+      </section>
+
+      <section class="status-section">
+        <h2>Status Log</h2>
+        <div id="log" class="log" aria-live="polite"></div>
+      </section>
+
+      <section id="result-section" class="result-section hidden">
+        <h2>Latest Result</h2>
+        <div id="extracted-text" class="extracted-text hidden"></div>
+        <div class="screenshot-wrapper">
+          <img id="screenshot" src="" alt="Generated design screenshot" />
+        </div>
+        <a id="download-link" href="#" download class="btn btn-secondary">Download Screenshot</a>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
