@@ -349,7 +349,7 @@ async function getShareCommand(page: Page): Promise<string | null> {
   try {
     console.log("[share] Starting Share → Claude Code flow...");
 
-    // Intercept clipboard.writeText on current page
+    // Intercept clipboard.writeText before anything else
     await page.evaluate(() => {
       (window as unknown as Record<string, unknown>)["__clipboardCapture"] = null;
       const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
@@ -359,43 +359,48 @@ async function getShareCommand(page: Page): Promise<string | null> {
       };
     });
 
-    // 1. Click Share
+    // Dismiss any open popover/backdrop that might block clicks
+    const backdrop = page.locator("[data-popover-backdrop]");
+    if (await backdrop.isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(400);
+    }
+
+    // 1. Click Share button
     const shareBtn = page.locator("button, [role='button']").filter({ hasText: /^Share$/i }).first();
     await shareBtn.waitFor({ state: "visible", timeout: 10000 });
     await shareBtn.click();
     await page.waitForTimeout(800);
-    console.log("[share] Clicked Share button");
+    console.log("[share] Clicked Share");
 
-    // 2. Click "Send to..."
-    const sendToBtn = page.locator("button, [role='button'], [role='menuitem'], li, a").filter({ hasText: /send to/i }).first();
-    await sendToBtn.waitFor({ state: "visible", timeout: 5000 });
-    await sendToBtn.click();
+    // 2. Click "Send to…" — it's a tab (role="tab"), not a menu item
+    const sendToTab = page.locator("[role='tab']").filter({ hasText: /send to/i }).first();
+    await sendToTab.waitFor({ state: "visible", timeout: 5000 });
+    await sendToTab.click();
     await page.waitForTimeout(800);
-    console.log("[share] Clicked Send to...");
+    console.log("[share] Clicked Send to… tab");
 
-    // 3. Click "Claude Code" (first option)
-    const claudeCodeOpt = page.locator("[role='option'], [role='menuitem'], li, button, a").filter({ hasText: /claude code/i }).first();
-    await claudeCodeOpt.waitFor({ state: "visible", timeout: 5000 });
-    await claudeCodeOpt.click();
-    await page.waitForTimeout(500);
-    console.log("[share] Clicked Claude Code option");
+    // 3. The page shows destination cards. Find the row that contains "Claude Code"
+    //    and click the Send button inside it.
+    //    Structure: <div row>(contains "Claude Code") → <button>Send</button>
+    const claudeCodeRow = page.locator("div").filter({ hasText: /claude code/i }).filter({
+      has: page.locator("button").filter({ hasText: /^Send$/i }),
+    }).first();
+    const sendInRow = claudeCodeRow.locator("button").filter({ hasText: /^Send$/i }).first();
+    await sendInRow.waitFor({ state: "visible", timeout: 5000 });
 
-    // 4. Click "Send" — may open a new window
-    const sendBtn = page.locator("button").filter({ hasText: /^Send$/i }).first();
-    await sendBtn.waitFor({ state: "visible", timeout: 5000 });
     const ctx = page.context();
     const [newPage] = await Promise.all([
       ctx.waitForEvent("page", { timeout: 8000 }).catch(() => null) as Promise<Page | null>,
-      sendBtn.click(),
+      sendInRow.click(),
     ]);
     await page.waitForTimeout(1200);
-    console.log("[share] Clicked Send, newPage=%s", newPage ? "yes" : "no");
+    console.log("[share] Clicked Claude Code Send, newPage=%s", newPage ? "yes" : "no");
 
     const targetPage: Page = newPage ?? page;
 
     if (newPage) {
       await newPage.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
-      // Intercept clipboard on the new page too
       await newPage.evaluate(() => {
         (window as unknown as Record<string, unknown>)["__clipboardCapture"] = null;
         const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
@@ -406,24 +411,26 @@ async function getShareCommand(page: Page): Promise<string | null> {
       }).catch(() => {});
     }
 
-    // 5. Try to read command text directly from a code/pre block before clicking copy
+    // 4. Try to grab the command text from a code/pre block before clicking copy
     let command: string | null = null;
     try {
       command = await targetPage.evaluate(() => {
-        const el = document.querySelector("pre, code, [data-testid*='command'], .command, .claude-code-command");
-        return el ? el.textContent?.trim() ?? null : null;
+        const el = document.querySelector("pre, code, [data-testid*='command'], .command");
+        const text = el?.textContent?.trim() ?? null;
+        // Reject CSS/style noise — a real command starts with a word character
+        return text && /^\w/.test(text) ? text : null;
       });
-      if (command) console.log("[share] Found command text in DOM directly");
+      if (command) console.log("[share] Found command in DOM:", command.slice(0, 80));
     } catch { /* ignore */ }
 
-    // 6. Click "Copy command"
+    // 5. Click "Copy command"
     const copyBtn = targetPage.locator("button").filter({ hasText: /copy command/i }).first();
     await copyBtn.waitFor({ state: "visible", timeout: 10000 });
     await copyBtn.click();
     await targetPage.waitForTimeout(600);
     console.log("[share] Clicked Copy command");
 
-    // 7. Read intercepted clipboard value (overrides direct DOM read)
+    // 6. Read intercepted clipboard (overrides DOM read)
     const captured = await targetPage.evaluate(
       () => (window as unknown as Record<string, unknown>)["__clipboardCapture"] as string | null
     ).catch(() => null);
@@ -435,7 +442,6 @@ async function getShareCommand(page: Page): Promise<string | null> {
     return command;
   } catch (err) {
     console.log("[share] Share flow failed:", err instanceof Error ? err.message : String(err));
-    // Close any stray dialogs by pressing Escape
     try { await page.keyboard.press("Escape"); } catch { /* ignore */ }
     return null;
   }
