@@ -9,6 +9,8 @@ cookies.json
 browser-profile/
 auth/storageState.json
 
+logs/
+
 # Generated outputs (keep the placeholder)
 outputs/*
 !outputs/.gitkeep

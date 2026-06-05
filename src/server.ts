@@ -6,6 +6,22 @@ import { randomUUID } from "crypto";
 import https from "https";
 import { generate, closeBrowser } from "./automation/claudeDesign.js";
 
+// ── File logging ─────────────────────────────────────────────────────────────
+const LOG_DIR = path.resolve("logs");
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+const logStream = fs.createWriteStream(path.join(LOG_DIR, "app.log"), { flags: "a" });
+
+function writeLog(level: string, ...args: unknown[]) {
+  const line = `[${new Date().toISOString()}] [${level}] ${args.map(String).join(" ")}\n`;
+  logStream.write(line);
+  level === "ERROR" ? process.stderr.write(line) : process.stdout.write(line);
+}
+
+const _log = console.log.bind(console);
+const _err = console.error.bind(console);
+console.log = (...a) => writeLog("INFO", ...a);
+console.error = (...a) => writeLog("ERROR", ...a);
+
 async function sendTelegram(message: string): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -155,8 +171,29 @@ app.get("/jobs", (_req: Request, res: Response) => {
   res.json(list);
 });
 
+app.get("/jobs/pending", (_req: Request, res: Response) => {
+  const pending = Array.from(jobs.values())
+    .filter((j) => j.status === "queued" || j.status === "running")
+    .map((j) => ({
+      jobId: j.id,
+      status: j.status,
+      prompt: j.prompt.slice(0, 100),
+      createdAt: j.createdAt,
+      startedAt: j.startedAt ?? null,
+    }));
+  res.json({ count: pending.length, jobs: pending });
+});
+
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", queueLength: queue.length, workerRunning });
+});
+
+app.get("/logs", (req: Request, res: Response) => {
+  const logFile = path.join(LOG_DIR, "app.log");
+  const lines = parseInt((req.query.lines as string) ?? "100", 10);
+  if (!fs.existsSync(logFile)) { res.json({ lines: [] }); return; }
+  const content = fs.readFileSync(logFile, "utf-8").trim().split("\n");
+  res.json({ lines: content.slice(-lines) });
 });
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
