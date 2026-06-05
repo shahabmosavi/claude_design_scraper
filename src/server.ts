@@ -47,6 +47,54 @@ async function sendTelegram(message: string): Promise<void> {
   await telegramRequest("sendMessage", { chat_id: chatId, text: message });
 }
 
+async function sendTelegramWithRetryButton(message: string, jobId: string): Promise<void> {
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!chatId) return;
+  await telegramRequest("sendMessage", {
+    chat_id: chatId,
+    text: message,
+    reply_markup: { inline_keyboard: [[{ text: "🔄 Retry", callback_data: `retry:${jobId}` }]] },
+  });
+}
+
+// Background poller: listens for inline button presses (callback_query)
+let callbackOffset = 0;
+async function startCallbackPoller(): Promise<void> {
+  while (true) {
+    try {
+      const res = await telegramRequest("getUpdates", {
+        offset: callbackOffset,
+        timeout: 20,
+        allowed_updates: ["callback_query"],
+      }) as { ok: boolean; result: Array<{ update_id: number; callback_query?: { id: string; data?: string } }> } | null;
+
+      if (res?.ok && res.result.length > 0) {
+        for (const update of res.result) {
+          callbackOffset = update.update_id + 1;
+          const cq = update.callback_query;
+          if (!cq?.data?.startsWith("retry:")) continue;
+
+          // Acknowledge button press immediately
+          await telegramRequest("answerCallbackQuery", { callback_query_id: cq.id });
+
+          const jobId = cq.data.slice(6);
+          const original = jobs.get(jobId);
+          if (!original || original.status !== "failed") {
+            await sendTelegram(`⚠️ Job ${jobId} not found or not failed.`);
+            continue;
+          }
+
+          const newJob = enqueueJob(original.prompt, original.mode, original.sourceIssueKey);
+          await sendTelegram(`🔄 Retrying job...\nPrompt: "${original.prompt.slice(0, 100)}"\nNew job: ${newJob.id}`);
+          console.log(`[tg] Retry requested for ${jobId} → new job ${newJob.id}`);
+        }
+      }
+    } catch {
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+}
+
 async function createJiraTask(sourceIssueKey: string | null, prompt: string, screenshotPath: string, shareCommand?: string | null): Promise<string | null> {
   const base = process.env.JIRA_BASE_URL;
   const email = process.env.JIRA_EMAIL;
@@ -217,7 +265,7 @@ async function runWorker() {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
       console.error(`[queue] Job ${jobId} failed:`, job.error);
-      sendTelegram(`❌ Job failed\nPrompt: "${job.prompt.slice(0, 100)}"\nReason: ${job.error}`).catch(() => {});
+      sendTelegramWithRetryButton(`❌ Job failed\nPrompt: "${job.prompt.slice(0, 100)}"\nReason: ${job.error}`, jobId).catch(() => {});
     }
 
     job.finishedAt = Date.now();
@@ -343,6 +391,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 const server = app.listen(PORT, () => {
   console.log(`\n[server] Claude Design Automation running at http://localhost:${PORT}`);
   console.log(`[server] Output directory: ${OUTPUT_DIR}`);
+  startCallbackPoller().catch(() => {});
 });
 
 function shutdown() {
