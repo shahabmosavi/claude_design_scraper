@@ -447,6 +447,63 @@ async function getShareCommand(page: Page): Promise<string | null> {
   }
 }
 
+async function selectModel(page: Page, prefer: "sonnet" | "opus" | "haiku"): Promise<void> {
+  const modelBtn = page.locator("button[title='Change model']").first();
+  await modelBtn.waitFor({ state: "visible", timeout: 5000 });
+  const currentLabel = (await modelBtn.innerText()).toLowerCase();
+  if (currentLabel.includes(prefer)) {
+    console.log(`[model] Already on ${currentLabel.trim()}`);
+    return;
+  }
+
+  await modelBtn.click();
+  await page.waitForTimeout(600);
+
+  // Model options appear as <span title="Claude Sonnet 4.6"> inside a popover.
+  // Use the title attribute for an exact, unambiguous match.
+  const option = page.locator(`span[title*="${prefer}" i], [role='option'][title*="${prefer}" i]`).first();
+  const isVisible = await option.isVisible().catch(() => false);
+
+  if (isVisible) {
+    await option.click();
+    const label = await option.getAttribute("title").catch(() => prefer);
+    console.log(`[model] Switched to: ${label}`);
+  } else {
+    // Fallback: evaluate-based click for environments without title attributes
+    const clicked = await page.evaluate((prefer) => {
+      const regex = new RegExp(prefer, "i");
+      const els = document.querySelectorAll("span, li, [role='option'], [role='menuitem']");
+      for (const el of Array.from(els)) {
+        const text = (el as HTMLElement).innerText?.trim() ?? "";
+        if (text.length > 0 && text.length < 40 && regex.test(text)) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            (el as HTMLElement).click();
+            return text;
+          }
+        }
+      }
+      return null;
+    }, prefer);
+
+    if (clicked) {
+      console.log(`[model] Switched to (fallback): ${clicked}`);
+    } else {
+      await page.keyboard.press("Escape");
+      throw new Error(`Could not find ${prefer} option in model dropdown`);
+    }
+  }
+
+  await page.waitForTimeout(400);
+
+  // Force-close the popover if still open (backdrop or Escape)
+  const backdrop = page.locator("[data-popover-backdrop]");
+  if (await backdrop.isVisible().catch(() => false)) {
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+  }
+}
+
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
   const { prompt, mode } = options;
   const claudeUrl = getEnv(
@@ -539,6 +596,11 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
     }));
   });
   console.log("[automation] Interactive elements found:", JSON.stringify(interactiveEls, null, 2));
+
+  // Switch model to Sonnet 4.6 if not already selected
+  await selectModel(page, "sonnet").catch((e) =>
+    console.log("[model] Could not switch model:", e instanceof Error ? e.message : String(e))
+  );
 
   // Find and fill the prompt input
   console.log("[automation] Looking for prompt input...");
