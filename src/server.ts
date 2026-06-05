@@ -137,6 +137,7 @@ app.post("/generate", (req: Request, res: Response) => {
   jobs.set(job.id, job);
   queue.push(job.id);
   console.log(`[queue] Enqueued job ${job.id} (queue length: ${queue.length})`);
+  sendTelegram(`📥 Job queued\nPrompt: "${job.prompt.slice(0, 100)}"\nQueue position: ${queue.length}`).catch(() => {});
 
   runWorker();
 
