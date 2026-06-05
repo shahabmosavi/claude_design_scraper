@@ -80,6 +80,7 @@ async function runWorker() {
         text: result.text,
       };
       console.log(`[queue] Job ${jobId} done`);
+      sendTelegram(`✅ Job done\nPrompt: "${job.prompt.slice(0, 100)}"\nScreenshot: ${job.result.screenshotPath}`).catch(() => {});
     } catch (err) {
       job.status = "failed";
       job.error = err instanceof Error ? err.message : String(err);
