@@ -23,7 +23,7 @@ Copy `.env.example` to `.env`. Key variables:
 | `BROWSER_PROFILE_DIR` | `./browser-profile` | Persistent Chromium profile (keeps login session) |
 | `COOKIE_FILE` | `./cookies.json` | Session cookies (j2team or plain Playwright array format) |
 | `OUTPUT_DIR` | `./outputs` | Where screenshots land |
-| `TIMEOUT_MS` | `180000` | Max ms to wait for Claude Design to finish generating |
+| `TIMEOUT_MS` | `1800000` | Max ms to wait for Claude Design to finish generating |
 | `PORT` | `3000` | Express server port |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | _(unset)_ | Enables job notifications and retry-via-button |
 | `JIRA_BASE_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_PROJECT_KEY` | _(unset)_ | Enables Jira task creation on job completion |

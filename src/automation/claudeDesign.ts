@@ -34,6 +34,7 @@ export function onBrowserCrash(handler: () => void): void {
 }
 
 const MAX_RETRIES = 3;
+const DEFAULT_GENERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 const CDP_PORT = 9222;
 
@@ -293,8 +294,9 @@ function waitForEnter(): Promise<void> {
  * This is deliberately resilient — we always take a screenshot regardless.
  */
 async function waitForResult(page: Page, previousText: string): Promise<string | null> {
-  const timeout = parseInt(getEnv("TIMEOUT_MS", "180000"), 10);
+  const timeout = parseInt(getEnv("TIMEOUT_MS", String(DEFAULT_GENERATION_TIMEOUT_MS)), 10);
   const deadline = Date.now() + timeout;
+  const remainingTimeout = () => Math.max(deadline - Date.now(), 1);
 
   console.log("[automation] Waiting for Claude Design to generate output...");
 
@@ -318,7 +320,7 @@ async function waitForResult(page: Page, previousText: string): Promise<string |
           text.includes("Reading ");
         return done || !stillWriting;
       },
-      { timeout: Math.min(120000, timeout), polling: 2000 }
+      { timeout: remainingTimeout(), polling: 2000 }
     );
     console.log("[automation] Claude Design generation appears complete");
   } catch {
@@ -333,7 +335,7 @@ async function waitForResult(page: Page, previousText: string): Promise<string |
         const text = document.body.innerText ?? "";
         return !text.includes("Creations will appear here");
       },
-      { timeout: Math.min(60000, timeout), polling: 1500 }
+      { timeout: remainingTimeout(), polling: 1500 }
     );
     console.log("[automation] Design canvas populated");
     // Extra buffer for canvas to fully paint
