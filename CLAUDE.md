@@ -9,6 +9,7 @@ npm run dev              # Run with tsx (no build step, hot-reload)
 npm run build            # Compile TypeScript → dist/
 npm start                # Run compiled dist/server.js
 npm run playwright:install  # Download Chromium for Playwright
+npx tsc --noEmit         # Type-check without emitting (no test suite exists)
 ```
 
 ## Environment
@@ -56,12 +57,15 @@ Jobs are processed serially by a single async worker (`runWorker`). The queue is
 
 ## Generation flow
 
-1. `generate()` navigates to `CLAUDE_DESIGN_URL`, handles Cloudflare challenges, checks for login wall, clicks "New sketch" to start a fresh conversation, switches the model to Sonnet, finds the prompt input, submits.
-2. `waitForResult()` polls for Claude Design's completion signals (`"View code"`, `"Preview"`, etc.) in 4 phases: stop-writing signal → canvas populated → network idle → fallback text-growth check.
-3. If Claude Design asks clarifying questions instead of generating, `questions` is returned. The server pauses the job, sends questions via Telegram, waits up to 10 min for a reply, then calls `submitAnswer()` to continue.
-4. On success: screenshot is saved, then `getShareCommand()` clicks Share → Send to Claude Code → Copy command and captures the clipboard text.
-5. If `JIRA_*` vars are set, a Jira task is created with the screenshot URL and share command.
-6. `refreshPage()` reloads the design URL to give the next job a clean slate.
+1. `generate()` navigates to `CLAUDE_DESIGN_URL`, handles Cloudflare challenges, checks for login wall, clicks "New sketch" to start a fresh conversation, switches the model to Sonnet (hardcoded in `selectModel()` call inside `generate()`), finds the prompt input, submits.
+2. Before submitting, a diagnostic screenshot (`diag-<timestamp>.png`) is saved to `OUTPUT_DIR` to capture the page state.
+3. `waitForResult()` polls for Claude Design's completion signals (`"View code"`, `"Preview"`, etc.) in 4 phases: stop-writing signal → canvas populated → network idle → fallback text-growth check.
+4. If Claude Design asks clarifying questions instead of generating, `questions` is returned. The server pauses the job, sends questions via Telegram, waits up to **30 min** for a reply, then calls `submitAnswer()` to continue.
+5. On success: screenshot is saved, then `getShareCommand()` clicks Share → Send to Claude Code → Copy command and captures the clipboard text.
+6. If `JIRA_*` vars are set, a Jira task is created with the screenshot URL and share command.
+7. `refreshPage()` reloads the design URL to give the next job a clean slate.
+
+`mode: "text"` attempts best-effort extraction of the assistant's response text via DOM selectors — it often returns `null` if the selectors don't match. `mode: "screenshot"` is the reliable path.
 
 Interrupted generations (no success/question signal after `waitForResult`) are retried up to `MAX_RETRIES = 3` times, clicking the "Retry" button if visible or reloading and re-submitting.
 
@@ -72,6 +76,10 @@ Interrupted generations (no success/question signal after `waitForResult`) are r
 3. `SAVE_STORAGE_STATE=true` → save `auth/storageState.json` after manual login.
 4. Browser profile at `BROWSER_PROFILE_DIR` persists sessions across server restarts.
 
+## Docker / nginx
+
+`docker-compose.yml` runs an nginx reverse proxy (`docker/nginx/default.conf`) that forwards external HTTP traffic to the Express server on `host.docker.internal`. Used to expose the `/jira` webhook endpoint publicly without putting the Node server on port 80 directly.
+
 ## Key constraints
 
 - `cookies.json` and `auth/storageState.json` are gitignored secrets — never log or expose their values.
@@ -79,3 +87,4 @@ Interrupted generations (no success/question signal after `waitForResult`) are r
 - `waitForResult()` is intentionally resilient — always takes a screenshot even on timeout.
 - `tsconfig.json` includes `"DOM"` in lib because `page.evaluate()` callbacks run in browser context.
 - The Telegram callback poller (`startCallbackPoller`) runs as an infinite background loop — it uses long-polling (20 s timeout) and is started once at server boot.
+- There is no test suite. Use `npx tsc --noEmit` to verify types.

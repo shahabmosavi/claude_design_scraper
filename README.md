@@ -104,6 +104,22 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
+## Nginx reverse proxy
+
+This repo now includes a minimal nginx container that proxies `shahab.dctm.dev` to the app running on `localhost:3000`.
+
+Start it with:
+
+```bash
+docker compose up -d
+```
+
+The nginx server block lives in [`docker/nginx/default.conf`](./docker/nginx/default.conf) and is already set to `server_name shahab.dctm.dev`.
+
+For the domain to work publicly, `shahab.dctm.dev` still needs an A or CNAME record pointing at this machine's public IP.
+
+---
+
 ## Running a single generation from the command line
 
 Use `curl` to call the API directly:
