@@ -572,6 +572,29 @@ async function selectModel(page: Page, prefer: "sonnet" | "opus" | "haiku"): Pro
   }
 }
 
+async function startNewChat(page: Page): Promise<void> {
+  const strategies = [
+    () => page.locator("button").filter({ hasText: /^New sketch$/i }).first(),
+    () => page.locator("button").filter({ hasText: /^New$/i }).first(),
+    () => page.locator("[aria-label*='new sketch' i]").first(),
+    () => page.locator("a").filter({ hasText: /^New sketch$/i }).first(),
+  ];
+
+  for (const getLocator of strategies) {
+    try {
+      const btn = getLocator();
+      await btn.waitFor({ state: "visible", timeout: 3000 });
+      await btn.click();
+      await page.waitForTimeout(1200);
+      console.log("[automation] Started new chat");
+      return;
+    } catch {
+      // try next strategy
+    }
+  }
+  console.log("[automation] No new-chat button found — continuing in current chat");
+}
+
 export async function generate(options: GenerateOptions): Promise<GenerateResult> {
   const { prompt, mode, onInterrupted } = options;
   const claudeUrl = getEnv(
@@ -644,6 +667,9 @@ export async function generate(options: GenerateOptions): Promise<GenerateResult
       console.log(`[auth] Storage state saved to ${storageStatePath}`);
     }
   }
+
+  // Start a fresh chat so each job gets its own conversation
+  await startNewChat(page);
 
   // Capture page text before submitting so we can detect change
   const previousText = await page.evaluate(

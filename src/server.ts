@@ -273,9 +273,9 @@ async function runWorker() {
         );
         console.log(`[queue] Job ${jobId} awaiting answer via Telegram`);
 
-        const answer = await waitForTelegramReply(askedAt, 10 * 60 * 1000); // 10 min timeout
+        const answer = await waitForTelegramReply(askedAt, 30 * 60 * 1000); // 30 min timeout
         if (!answer) {
-          throw new Error("No answer received within 10 minutes.");
+          throw new Error("No answer received within 30 minutes.");
         }
 
         console.log(`[queue] Got answer for job ${jobId}: "${answer.slice(0, 80)}"`);
