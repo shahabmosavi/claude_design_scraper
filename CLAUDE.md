@@ -33,6 +33,8 @@ Copy `.env.example` to `.env`. Key variables:
 
 **Entry point:** `src/server.ts` — Express server. All logs are written to `logs/app.log` and tee'd to stdout/stderr. All console output goes through the log wrapper at the top.
 
+**Public docs:** `README.md` is the quickstart. `docs/API.md` contains full REST request/response examples, `docs/INTEGRATIONS.md` covers Telegram and Jira, and `docs/TROUBLESHOOTING.md` covers common runtime failures.
+
 **Job queue (`src/server.ts`):**
 Jobs are processed serially by a single async worker (`runWorker`). The queue is in-memory (`Map<string, Job>` + `string[]`), so it resets on restart. Failed jobs are persisted to `logs/failed-jobs.json` so the Telegram retry button works across restarts. Job statuses: `queued → running → (awaiting_answer →) done | failed`.
 
@@ -41,7 +43,7 @@ Jobs are processed serially by a single async worker (`runWorker`). The queue is
 - `src/automation/selectors.ts` — DOM-selector helpers: `findPromptInput()` tries 8 strategies, `submitPrompt()` tries 5 button strategies then falls back to Enter, `isLoginPage()` requires an actual form field (not just nav text).
 - `src/automation/cookies.ts` — Cookie file I/O and injection. Accepts plain Playwright array or j2team/EditThisCookie format.
 
-**Frontend:** `src/public/` — vanilla HTML/CSS/JS, no build step.
+**Frontend:** `src/public/` — vanilla HTML/CSS/JS, no build step. Current caveat: `src/public/app.js` still expects an older synchronous `/generate` response shape, while `src/server.ts` now returns `202 { jobId, status }` and requires polling `GET /jobs/:id`.
 
 ## API endpoints
 
@@ -78,7 +80,7 @@ Interrupted generations (no success/question signal after `waitForResult`) are r
 
 ## Docker / nginx
 
-`docker-compose.yml` runs an nginx reverse proxy (`docker/nginx/default.conf`) that forwards external HTTP traffic to the Express server on `host.docker.internal`. Used to expose the `/jira` webhook endpoint publicly without putting the Node server on port 80 directly.
+`docker-compose.yml` runs an nginx reverse proxy (`docker/nginx/default.conf`) that forwards external HTTP traffic to the Express server on `host.docker.internal:3000`. The same nginx config proxies `/mcp` to `host.docker.internal:38629/mcp`. Used to expose endpoints such as `/jira` publicly without putting the Node server on port 80 directly.
 
 ## Key constraints
 
