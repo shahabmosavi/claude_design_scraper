@@ -100,6 +100,8 @@ async function startCallbackPoller(): Promise<void> {
   }
 }
 
+const AI_FRONTEND_LABEL = "ai-frontend";
+
 async function createJiraTask(sourceIssueKey: string | null, prompt: string, screenshotPath: string, shareCommand?: string | null): Promise<string | null> {
   const base = process.env.JIRA_BASE_URL;
   const email = process.env.JIRA_EMAIL;
@@ -129,6 +131,7 @@ async function createJiraTask(sourceIssueKey: string | null, prompt: string, scr
       project: { key: project },
       summary: `Frontend implementation — ${(sourceIssueKey ?? prompt.replace(/\s+/g, " ").slice(0, 60)).trim()}`,
       issuetype: { name: "Task" },
+      labels: [AI_FRONTEND_LABEL],
       description: { type: "doc", version: 1, content: descContent },
     },
   });
