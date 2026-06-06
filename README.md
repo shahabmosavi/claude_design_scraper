@@ -37,7 +37,7 @@ cp .env.example .env
 | `BROWSER_PROFILE_DIR` | `./browser-profile` | Persistent Chromium profile directory |
 | `OUTPUT_DIR` | `./outputs` | Where screenshots are saved |
 | `COOKIE_FILE` | `./cookies.json` | Path to your session cookies file |
-| `TIMEOUT_MS` | `180000` | Max ms to wait for generation (3 min) |
+| `TIMEOUT_MS` | `1800000` | Max ms to wait for generation (30 min) |
 | `PORT` | `3000` | Local server port |
 | `SAVE_STORAGE_STATE` | _(unset)_ | Set to `true` to save auth state after manual login |
 
